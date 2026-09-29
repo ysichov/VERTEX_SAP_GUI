@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "vertex-sap-gui": {
+      "command": "D:\\Soft\\python.exe",
+      "args": [
+        "C:\\soft\\GitHub\\VERTEX_SAP_GUI\\server.py"
+      ],
+      "env": {
+        "VERTEX_SAP_CONNECT_TIMEOUT": "25"
+      }
+    }
+  }
+}
