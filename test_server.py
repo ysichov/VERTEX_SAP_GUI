@@ -58,18 +58,39 @@ class FakeWindow:
         self.sent_keys.append(key)
 
 
+class FakeRow:
+    def __init__(self) -> None:
+        self.Selected = False
+
+
+class FakeTable:
+    def __init__(self) -> None:
+        self.VerticalScrollbar = type("Scrollbar", (), {"Position": 0})()
+        self.row = FakeRow()
+
+    def getAbsoluteRow(self, index: int) -> FakeRow:
+        if index != 0:
+            raise AssertionError(f"Unexpected row {index}")
+        return self.row
+
+
 class FakePa30Session:
     def __init__(self) -> None:
         self.Id = "/app/con[0]/ses[0]"
         self.Info = FakeInfo("ALC", "200", "TEST", "PA30")
         self.choice = FakeControl("RP50G-CHOIC")
         self.command = FakeControl("okcd")
+        self.title = FakeControl("GV_ITEXT")
+        self.title.Text = "Challenge"
+        self.title.Id = "wnd[0]/usr/tblSAPMP50ATC_MENU/txtGV_ITEXT[0,0]"
+        self.table = FakeTable()
         self.window = FakeWindow()
-        self.Children = FakeChildren([self.choice])
+        self.Children = FakeChildren([self.choice, self.title])
 
     def findById(self, control_id: str):
         return {
             "wnd[0]/tbar[0]/okcd": self.command,
+            "wnd[0]/usr/tblSAPMP50ATC_MENU": self.table,
             "wnd[0]": self.window,
             "wnd[0]/sbar": type("Status", (), {"Text": "", "MessageType": ""})(),
         }[control_id]
@@ -122,7 +143,8 @@ class ServerTests(unittest.TestCase):
         ):
             result = server.sap_open_infotype("Challenge", "display", session.Id)
 
-        self.assertEqual(session.choice.text, "Challenge")
+        self.assertEqual(session.choice.text, "")
+        self.assertTrue(session.table.row.Selected)
         self.assertEqual(session.command.text, "=DIS")
         self.assertEqual(session.window.sent_keys, [0])
         self.assertEqual(result["infotype"], "Challenge")

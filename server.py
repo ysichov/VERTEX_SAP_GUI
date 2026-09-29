@@ -138,6 +138,30 @@ def _editable_text_control_by_name(session: Any, name: str) -> Any:
     raise RuntimeError(f"Поле {name} не найдено или недоступно для ввода.")
 
 
+def _select_pa30_infotype_title(session: Any, title: str) -> bool:
+    """Select a visible PA30 infotype-menu row by its displayed title.
+
+    PA30's direct-selection field is not consistent across localizations and
+    customer menus: it can keep the old selected row even after setting its
+    text. Selecting the matching table row is deterministic and does not rely
+    on a built-in title-to-number mapping.
+    """
+    expected = title.casefold()
+    for component in _walk(session):
+        if _value(component, "Text", "").strip().casefold() != expected:
+            continue
+        control_id = _value(component, "Id", "")
+        match = re.search(r"/tbl[^/]+/[^/]+\[\d+,(\d+)\]$", control_id)
+        if not match:
+            continue
+        table_id = control_id.rsplit("/", 1)[0]
+        table = session.findById(table_id)
+        absolute_row = int(match.group(1)) + int(_value(_value(table, "VerticalScrollbar", None), "Position", 0))
+        table.getAbsoluteRow(absolute_row).Selected = True
+        return True
+    return False
+
+
 def _require_actions_enabled() -> None:
     if not ACTIONS_ENABLED:
         raise PermissionError(
@@ -276,10 +300,10 @@ def sap_open_infotype(
 ) -> dict[str, Any]:
     """Open a PA30 infotype by its number or visible name, without saving data.
 
-    Examples: ``0004`` or ``Challenge``.  The name is resolved by the current
-    PA30 configuration, so localized and customer-specific infotype titles are
-    supported.  ``mode`` may be ``display``, ``change``, or ``create``; opening
-    an infotype never saves it.
+    Examples: ``0004`` or ``Challenge``.  A title is matched to the visible
+    PA30 menu row, so localized and customer-specific infotype titles are
+    supported without a static title-to-number mapping.  ``mode`` may be
+    ``display``, ``change``, or ``create``; opening an infotype never saves it.
     """
     _require_actions_enabled()
     selection = infotype.strip()
@@ -294,7 +318,13 @@ def sap_open_infotype(
         session = _session(session_id, require_explicit=True)
         if _value(_value(session, "Info", None), "Transaction", "").upper() != "PA30":
             raise ValueError("sap_open_infotype доступен только в транзакции PA30.")
-        _editable_text_control_by_name(session, "RP50G-CHOIC").text = selection
+        if re.fullmatch(r"\d{4}", selection):
+            _editable_text_control_by_name(session, "RP50G-CHOIC").text = selection
+        elif not _select_pa30_infotype_title(session, selection):
+            raise ValueError(
+                "Инфотип с таким названием не найден среди видимых строк PA30. "
+                "Откройте нужную вкладку или укажите четырёхзначный номер."
+            )
         command_field = session.findById("wnd[0]/tbar[0]/okcd")
         command_field.text = function_codes[normalized_mode]
         session.findById("wnd[0]").sendVKey(0)
