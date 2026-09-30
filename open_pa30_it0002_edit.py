@@ -1,7 +1,7 @@
-r"""Открывает PA30: табельный номер 91000005, инфотип 0002, режим изменения.
+r"""Open PA30 for personnel number 91000005, infotype 0002, in change mode.
 
-Скрипт только открывает экран изменения. Он не изменяет поля и не нажимает Save.
-Запуск:
+The script only opens the change screen. It does not change fields or press Save.
+Run:
     py C:\soft\GitHub\VERTEX_SAP_GUI\open_pa30_it0002_edit.py
 """
 
@@ -16,7 +16,7 @@ INFOTYPE = "0002"
 
 
 def walk(component):
-    """Возвращает компонент и все вложенные контролы SAP GUI."""
+    """Yield a component and all nested SAP GUI controls."""
     yield component
     try:
         children = component.Children
@@ -31,15 +31,15 @@ def find_by_name(session, name):
     for control in walk(session):
         try:
             if control.Name == name:
-                # Одно и то же техническое имя может встречаться у label,
-                # скрытого поля и самого поля ввода. Нас интересуют только
-                # редактируемые текстовые/комбинированные поля.
+                # The same technical name can appear on a label, a hidden
+                # field, and the actual input field. We only need editable
+                # text or combo-box fields.
                 if control.Type not in ("GuiCTextField", "GuiTextField", "GuiComboBox"):
                     continue
                 if not control.Changeable:
                     continue
-                # На экране PA30 существуют скрытые и видимые копии некоторых
-                # полей. Для Direct selection нужна именно видимая копия.
+                # PA30 screens can contain hidden and visible copies of some
+                # fields. Direct selection needs the visible copy.
                 if fallback is None:
                     fallback = control
                 if control.Visible:
@@ -64,7 +64,7 @@ def wait_for_by_name(session, name, timeout=10):
 
 
 def open_in_change_mode(session):
-    """Передаёт PA30 стандартный function code MOD (Change)."""
+    """Send PA30's standard MOD function code (Change)."""
     command_field = session.findById("wnd[0]/tbar[0]/okcd")
     command_field.text = "=MOD"
     session.findById("wnd[0]").sendVKey(0)
@@ -79,7 +79,7 @@ def active_session(application):
                 return session
         except Exception:
             pass
-        # Резервный путь полезен, когда активным окном является PowerShell.
+        # This fallback helps when PowerShell is the active window.
         try:
             for connection_index in range(application.Children.Count):
                 connection = application.Children(connection_index)

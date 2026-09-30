@@ -1,7 +1,7 @@
-r"""Открывает транзакцию PA30 в первой доступной сессии SAP GUI.
+r"""Open transaction PA30 in the first available SAP GUI session.
 
-Перед запуском войдите в SAP и откройте главное окно SAP Easy Access.
-Запуск:
+Before running, sign in to SAP and open the SAP Easy Access main window.
+Run:
     py C:\soft\GitHub\VERTEX_SAP_GUI\open_pa30.py
 """
 
@@ -18,14 +18,14 @@ def main() -> None:
 
         print("Если SAP спросит разрешение на доступ скрипта, нажмите OK.")
 
-        # После первого подключения SAP GUI может показать пользователю окно
-        # подтверждения. Ждём завершения этого действия, затем ищем сессию.
+        # SAP GUI may show a consent dialog after the first attachment.
+        # Wait for that interaction to finish, then look for a session.
         deadline = time.monotonic() + 30
         active_session_error = None
         while time.monotonic() < deadline:
-            # При запуске из SAP Logon коллекция Children может описывать
-            # только само окно Logon. ActiveSession указывает на экран, с
-            # которым сейчас работает пользователь.
+            # When launched from SAP Logon, Children may describe only the
+            # Logon window. ActiveSession points to the screen the user is
+            # currently working with.
             try:
                 session = application.ActiveSession
                 if session:

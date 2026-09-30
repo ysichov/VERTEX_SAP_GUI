@@ -74,6 +74,14 @@ class FakeTable:
         return self.row
 
 
+class FakeGrid:
+    ColumnOrder = ("PERNR", "ENAME")
+    RowCount = 2
+
+    def GetCellValue(self, row: int, column: str) -> str:
+        return (("91000001", "Тест 1"), ("91000002", "Тест 2"))[row][self.ColumnOrder.index(column)]
+
+
 class FakePa30Session:
     def __init__(self) -> None:
         self.Id = "/app/con[0]/ses[0]"
@@ -181,6 +189,16 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(result[0]["name"], "P0002-NACHN")
         self.assertEqual(result[0]["text"], "Тест")
+
+    def test_read_grid_rows_reads_requested_columns(self) -> None:
+        session = FakePa30Session()
+        grid = FakeGrid()
+        original_find_by_id = session.findById
+        session.findById = lambda control_id: grid if control_id == "wnd[0]/usr/grid" else original_find_by_id(control_id)
+        with patch.object(server, "_session", return_value=session):
+            result = server.sap_read_grid_rows("wnd[0]/usr/grid", ["PERNR"], 10, session.Id)
+
+        self.assertEqual(result["rows"], [{"PERNR": "91000001"}, {"PERNR": "91000002"}])
 
 
 if __name__ == "__main__":

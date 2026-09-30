@@ -422,6 +422,181 @@ def sap_read_fields(control_ids: list[str], session_id: str | None = None) -> li
         return fields
 
 
+def _grid_columns(grid: Any) -> list[str]:
+    """Convert the SAP GUI grid's COM column collection to plain strings."""
+    columns = _value(grid, "ColumnOrder", ())
+    try:
+        return [str(column) for column in columns]
+    except TypeError as error:
+        raise RuntimeError("Не удалось прочитать список колонок SAP Grid.") from error
+
+
+def _activate_grid_row(session: Any, grid: Any, row: int, column: str | None = None) -> None:
+    if row >= int(_value(grid, "RowCount", 0)):
+        raise ValueError("Указанная строка отсутствует в SAP Grid.")
+    columns = _grid_columns(grid)
+    if column is not None and column not in columns:
+        raise ValueError("Указанная колонка отсутствует в SAP Grid.")
+    current_column = column or (columns[0] if columns else "")
+    if not current_column:
+        raise RuntimeError("В SAP Grid не найдены колонки.")
+
+    try:
+        grid.FirstVisibleRow = row
+    except Exception:
+        pass
+    try:
+        grid.SelectedRows = str(row)
+    except Exception:
+        pass
+    try:
+        grid.CurrentCellRow = row
+        grid.CurrentCellColumn = current_column
+        grid.CurrentCellMoved()
+    except Exception:
+        pass
+
+    errors: list[str] = []
+    for method_name, args in (
+        ("DoubleClick", (row, current_column)),
+        ("doubleClick", (row, current_column)),
+        ("DoubleClickCurrentCell", ()),
+        ("doubleClickCurrentCell", ()),
+    ):
+        method = _value(grid, method_name, None)
+        if method is None:
+            continue
+        try:
+            method(*args)
+            _wait_until_ready(session)
+            return
+        except Exception as error:
+            errors.append(f"{method_name}: {error}")
+
+    for key in (2, 0):
+        try:
+            session.findById("wnd[0]").sendVKey(key)
+            _wait_until_ready(session)
+            return
+        except Exception as error:
+            errors.append(f"sendVKey({key}): {error}")
+
+    detail = "; ".join(errors) if errors else "методы активации строки недоступны"
+    raise RuntimeError(f"Не удалось активировать строку SAP Grid: {detail}")
+
+
+@mcp.tool()
+def sap_read_grid_rows(
+    grid_id: str,
+    columns: list[str] | None = None,
+    max_rows: int = 100,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Read rows directly from a visible SAP GUI grid without opening records.
+
+    Call once without ``columns`` to discover technical column names, then pass
+    only the needed names (for example ``PERNR`` and ``ENAME``) on later calls.
+    """
+    if not 1 <= max_rows <= 500:
+        raise ValueError("max_rows должен быть от 1 до 500.")
+    with _sap_call():
+        session = _session(session_id)
+        grid = _control(session, grid_id)
+        available_columns = _grid_columns(grid)
+        selected_columns = columns or available_columns
+        if not selected_columns:
+            raise RuntimeError("В SAP Grid не найдены колонки.")
+        unknown = sorted(set(selected_columns) - set(available_columns))
+        if unknown:
+            raise ValueError(f"В SAP Grid нет колонок: {', '.join(unknown)}.")
+        row_count = min(int(_value(grid, "RowCount", 0)), max_rows)
+        rows = [
+            {
+                column: _value(grid, "GetCellValue")(row, column)
+                for column in selected_columns
+            }
+            for row in range(row_count)
+        ]
+        return {
+            "grid_id": grid_id,
+            "columns": available_columns,
+            "row_count": int(_value(grid, "RowCount", 0)),
+            "truncated": int(_value(grid, "RowCount", 0)) > max_rows,
+            "rows": rows,
+        }
+
+
+@mcp.tool()
+def sap_select_grid_row(
+    grid_id: str,
+    row: int,
+    column: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Select a visible SAP GUI grid row without saving data."""
+    _require_actions_enabled()
+    if row < 0:
+        raise ValueError("row не может быть отрицательным.")
+    with _sap_call():
+        session = _session(session_id, require_explicit=True)
+        grid = _control(session, grid_id)
+        _activate_grid_row(session, grid, row, column)
+        return _screen_summary(session)
+
+
+@mcp.tool()
+def sap_read_grid_infotype_fields(
+    grid_id: str,
+    field_ids: list[str],
+    columns: list[str] | None = None,
+    max_rows: int = 100,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Activate each visible grid row and read known infotype field ids."""
+    _require_actions_enabled()
+    if not 1 <= max_rows <= 100:
+        raise ValueError("max_rows должен быть от 1 до 100.")
+    if not 1 <= len(field_ids) <= 20:
+        raise ValueError("field_ids должен содержать от 1 до 20 полей.")
+    with _sap_call():
+        session = _session(session_id, require_explicit=True)
+        grid = _control(session, grid_id)
+        available_columns = _grid_columns(grid)
+        selected_columns = columns or available_columns
+        unknown = sorted(set(selected_columns) - set(available_columns))
+        if unknown:
+            raise ValueError(f"В SAP Grid нет колонок: {', '.join(unknown)}.")
+        row_count = min(int(_value(grid, "RowCount", 0)), max_rows)
+        total_start = time.perf_counter()
+        results = []
+        for row in range(row_count):
+            row_start = time.perf_counter()
+            grid_values = {
+                column: _value(grid, "GetCellValue")(row, column)
+                for column in selected_columns
+            }
+            _activate_grid_row(session, grid, row, selected_columns[0] if selected_columns else None)
+            fields = {
+                field_id: _value(_control(session, field_id), "Text", "")
+                for field_id in field_ids
+            }
+            results.append(
+                {
+                    "row": row,
+                    "grid": grid_values,
+                    "fields": fields,
+                    "duration_ms": round((time.perf_counter() - row_start) * 1000),
+                }
+            )
+        return {
+            "grid_id": grid_id,
+            "row_count": int(_value(grid, "RowCount", 0)),
+            "truncated": int(_value(grid, "RowCount", 0)) > max_rows,
+            "total_ms": round((time.perf_counter() - total_start) * 1000),
+            "results": results,
+        }
+
+
 @mcp.tool()
 def sap_open_transaction(code: str, session_id: str | None = None) -> dict[str, Any]:
     """Open a SAP transaction when actions are explicitly enabled."""
