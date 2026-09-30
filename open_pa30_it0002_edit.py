@@ -48,7 +48,7 @@ def find_by_name(session, name):
             continue
     if fallback is not None:
         return fallback
-    raise RuntimeError(f"Контрол {name} не найден")
+    raise RuntimeError(f"Control {name} not found")
 
 
 def wait_for_by_name(session, name, timeout=10):
@@ -60,7 +60,7 @@ def wait_for_by_name(session, name, timeout=10):
         except RuntimeError as error:
             last_error = error
             time.sleep(0.5)
-    raise last_error or RuntimeError(f"Контрол {name} не найден")
+    raise last_error or RuntimeError(f"Control {name} not found")
 
 
 def open_in_change_mode(session):
@@ -88,14 +88,14 @@ def active_session(application):
         except Exception:
             pass
         time.sleep(1)
-    raise RuntimeError("Рабочая SAP-сессия не найдена")
+    raise RuntimeError("No working SAP session found")
 
 
 def main() -> None:
     try:
         sap_gui = win32com.client.GetObject("SAPGUI")
         application = sap_gui.GetScriptingEngine
-        print("Если SAP спросит разрешение на доступ скрипта, нажмите OK.")
+        print("If SAP asks for scripting access, click OK.")
         session = active_session(application)
 
         session.StartTransaction("PA30")
@@ -104,11 +104,11 @@ def main() -> None:
         wait_for_by_name(session, "RP50G-CHOIC").text = INFOTYPE
         open_in_change_mode(session)
 
-        print(f"Открыт табельный номер {PERNR}, инфотип {INFOTYPE}, режим изменения.")
-        print("Данные не изменялись и не сохранялись.")
+        print(f"Opened personnel number {PERNR}, infotype {INFOTYPE}, in change mode.")
+        print("No data was changed or saved.")
     except Exception as error:
-        print("Не удалось открыть инфотип на изменение.")
-        print(f"Техническая информация: {error}")
+        print("Could not open the infotype in change mode.")
+        print(f"Technical details: {error}")
         sys.exit(1)
 
 

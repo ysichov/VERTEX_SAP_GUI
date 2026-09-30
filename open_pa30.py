@@ -16,7 +16,7 @@ def main() -> None:
         sap_gui = win32com.client.GetObject("SAPGUI")
         application = sap_gui.GetScriptingEngine
 
-        print("Если SAP спросит разрешение на доступ скрипта, нажмите OK.")
+        print("If SAP asks for scripting access, click OK.")
 
         # SAP GUI may show a consent dialog after the first attachment.
         # Wait for that interaction to finish, then look for a session.
@@ -30,7 +30,7 @@ def main() -> None:
                 session = application.ActiveSession
                 if session:
                     session.StartTransaction("PA30")
-                    print("Транзакция PA30 открыта.")
+                    print("Transaction PA30 opened.")
                     return
             except Exception as error:
                 active_session_error = error
@@ -40,18 +40,18 @@ def main() -> None:
                 if connection.Children.Count:
                     session = connection.Children(0)
                     session.StartTransaction("PA30")
-                    print("Транзакция PA30 открыта.")
+                    print("Transaction PA30 opened.")
                     return
             time.sleep(1)
 
-        print("Рабочая SAP-сессия не найдена.")
+        print("No working SAP session found.")
         if active_session_error:
-            print(f"Не удалось получить активную сессию: {active_session_error}")
-        print("Откройте систему в SAP Logon и войдите в SAP, затем повторите запуск.")
+            print(f"Could not get the active session: {active_session_error}")
+        print("Open the system in SAP Logon, sign in, then run the script again.")
         sys.exit(1)
     except Exception as error:
-        print("Не удалось открыть PA30.")
-        print(f"Техническая информация: {error}")
+        print("Could not open PA30.")
+        print(f"Technical details: {error}")
         sys.exit(1)
 
 

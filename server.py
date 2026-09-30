@@ -91,10 +91,10 @@ def _application() -> Any:
                 break
             time.sleep(CONNECT_RETRY_SECONDS)
     raise RuntimeError(
-        "SAP GUI Scripting не стал доступен за "
-        f"{CONNECT_TIMEOUT_SECONDS:g} с. Откройте SAP GUI, войдите в систему "
-        "и подтвердите окно разрешения Scripting. "
-        f"Последняя COM-ошибка: {last_error}"
+        "SAP GUI Scripting did not become available within "
+        f"{CONNECT_TIMEOUT_SECONDS:g} seconds. Open SAP GUI, sign in, "
+        "and confirm the Scripting consent dialog. "
+        f"Last COM error: {last_error}"
     ) from last_error
 
 
@@ -120,21 +120,21 @@ def _session(session_id: str | None = None, require_explicit: bool = False) -> A
         for session in sessions:
             if _value(session, "Id", "") == session_id:
                 return session
-        raise ValueError("Указанная SAP-сессия не найдена. Вызовите sap_list_sessions.")
+        raise ValueError("The specified SAP session was not found. Call sap_list_sessions.")
     if not sessions:
-        raise RuntimeError("Рабочая SAP-сессия не найдена.")
+        raise RuntimeError("No working SAP session found.")
     if require_explicit and len(sessions) > 1:
-        raise ValueError("Найдено несколько SAP-сессий. Укажите session_id из sap_list_sessions.")
+        raise ValueError("Multiple SAP sessions found. Provide session_id from sap_list_sessions.")
     return sessions[0]
 
 
 def _control(session: Any, control_id: str) -> Any:
     if not control_id.startswith("wnd["):
-        raise ValueError("control_id должен начинаться с 'wnd['.")
+        raise ValueError("control_id must start with 'wnd['.")
     try:
         return session.findById(control_id)
     except Exception as error:
-        raise RuntimeError(f"Контрол не найден: {control_id}") from error
+        raise RuntimeError(f"Control not found: {control_id}") from error
 
 
 def _editable_text_control_by_name(session: Any, name: str) -> Any:
@@ -156,7 +156,7 @@ def _editable_text_control_by_name(session: Any, name: str) -> Any:
         fallback = fallback or component
     if fallback is not None:
         return fallback
-    raise RuntimeError(f"Поле {name} не найдено или недоступно для ввода.")
+    raise RuntimeError(f"Field {name} was not found or is not editable.")
 
 
 def _visible_control_by_name(session: Any, name: str) -> Any:
@@ -164,7 +164,7 @@ def _visible_control_by_name(session: Any, name: str) -> Any:
     for component in _walk(session):
         if _value(component, "Name", "") == name and _value(component, "Visible", True):
             return component
-    raise RuntimeError(f"Видимый контрол {name} не найден.")
+    raise RuntimeError(f"Visible control {name} not found.")
 
 
 def _select_pa30_infotype_title(session: Any, title: str) -> bool:
@@ -196,7 +196,7 @@ def _wait_until_ready(session: Any) -> None:
     deadline = time.monotonic() + SESSION_READY_TIMEOUT_SECONDS
     while _value(session, "Busy", False):
         if time.monotonic() >= deadline:
-            raise TimeoutError("SAP не завершил обработку за отведённое время.")
+            raise TimeoutError("SAP did not finish processing within the allotted time.")
         time.sleep(0.05)
 
 
@@ -204,19 +204,19 @@ def _open_infotype(session: Any, infotype: str, mode: str) -> dict[str, Any]:
     """Open a PA30 infotype in an already selected session without saving it."""
     selection = infotype.strip()
     if not selection or len(selection) > 80:
-        raise ValueError("infotype должен содержать от 1 до 80 символов.")
+        raise ValueError("infotype must contain 1 to 80 characters.")
     function_codes = {"display": "=DIS", "change": "=MOD", "create": "=INS"}
     normalized_mode = mode.strip().lower()
     if normalized_mode not in function_codes:
-        raise ValueError("mode должен быть display, change или create.")
+        raise ValueError("mode must be display, change, or create.")
     if _value(_value(session, "Info", None), "Transaction", "").upper() != "PA30":
-        raise ValueError("sap_open_infotype доступен только в транзакции PA30.")
+        raise ValueError("sap_open_infotype is only available in transaction PA30.")
     if re.fullmatch(r"\d{4}", selection):
         _editable_text_control_by_name(session, "RP50G-CHOIC").text = selection
     elif not _select_pa30_infotype_title(session, selection):
         raise ValueError(
-            "Инфотип с таким названием не найден среди видимых строк PA30. "
-            "Откройте нужную вкладку или укажите четырёхзначный номер."
+            "No infotype with that title was found among visible PA30 rows. "
+            "Open the required tab or provide a four-digit number."
         )
     command_field = session.findById("wnd[0]/tbar[0]/okcd")
     command_field.text = function_codes[normalized_mode]
@@ -279,8 +279,8 @@ def _cached_visible_fields(session: Any, max_fields: int) -> tuple[list[dict[str
 def _require_actions_enabled() -> None:
     if not ACTIONS_ENABLED:
         raise PermissionError(
-            "Изменяющие действия отключены. Для их включения задайте "
-            "VERTEX_SAP_ENABLE_ACTIONS=1 в конфигурации MCP и перезапустите сервер."
+            "Changing actions are disabled. To enable them, set "
+            "VERTEX_SAP_ENABLE_ACTIONS=1 in the MCP configuration and restart the server."
         )
 
 
@@ -346,7 +346,7 @@ def sap_clear_layout_cache() -> dict[str, int]:
 def sap_get_screen(session_id: str | None = None, max_controls: int = 120) -> dict[str, Any]:
     """Return basic screen metadata plus visible controls in the active SAP session."""
     if not 1 <= max_controls <= 500:
-        raise ValueError("max_controls должен быть от 1 до 500.")
+        raise ValueError("max_controls must be between 1 and 500.")
 
     with _sap_call():
         session = _session(session_id)
@@ -376,9 +376,9 @@ def sap_get_screen(session_id: str | None = None, max_controls: int = 120) -> di
 def sap_find_controls(query: str, session_id: str | None = None, max_results: int = 30) -> list[dict[str, Any]]:
     """Find visible SAP controls by a case-insensitive match on ID, name, text, or tooltip."""
     if not query.strip():
-        raise ValueError("query не должен быть пустым.")
+        raise ValueError("query must not be empty.")
     if not 1 <= max_results <= 100:
-        raise ValueError("max_results должен быть от 1 до 100.")
+        raise ValueError("max_results must be between 1 and 100.")
 
     with _sap_call():
         needle = query.casefold()
@@ -404,7 +404,7 @@ def sap_find_controls(query: str, session_id: str | None = None, max_results: in
 def sap_read_fields(control_ids: list[str], session_id: str | None = None) -> list[dict[str, Any]]:
     """Read explicitly identified SAP fields without traversing the screen tree."""
     if not 1 <= len(control_ids) <= 50:
-        raise ValueError("control_ids должен содержать от 1 до 50 идентификаторов.")
+        raise ValueError("control_ids must contain 1 to 50 identifiers.")
     with _sap_call():
         session = _session(session_id)
         fields: list[dict[str, Any]] = []
@@ -428,18 +428,18 @@ def _grid_columns(grid: Any) -> list[str]:
     try:
         return [str(column) for column in columns]
     except TypeError as error:
-        raise RuntimeError("Не удалось прочитать список колонок SAP Grid.") from error
+        raise RuntimeError("Could not read the SAP Grid column list.") from error
 
 
 def _activate_grid_row(session: Any, grid: Any, row: int, column: str | None = None) -> None:
     if row >= int(_value(grid, "RowCount", 0)):
-        raise ValueError("Указанная строка отсутствует в SAP Grid.")
+        raise ValueError("The specified row does not exist in the SAP Grid.")
     columns = _grid_columns(grid)
     if column is not None and column not in columns:
-        raise ValueError("Указанная колонка отсутствует в SAP Grid.")
+        raise ValueError("The specified column does not exist in the SAP Grid.")
     current_column = column or (columns[0] if columns else "")
     if not current_column:
-        raise RuntimeError("В SAP Grid не найдены колонки.")
+        raise RuntimeError("No columns found in the SAP Grid.")
 
     try:
         grid.FirstVisibleRow = row
@@ -481,8 +481,8 @@ def _activate_grid_row(session: Any, grid: Any, row: int, column: str | None = N
         except Exception as error:
             errors.append(f"sendVKey({key}): {error}")
 
-    detail = "; ".join(errors) if errors else "методы активации строки недоступны"
-    raise RuntimeError(f"Не удалось активировать строку SAP Grid: {detail}")
+    detail = "; ".join(errors) if errors else "row activation methods are unavailable"
+    raise RuntimeError(f"Could not activate the SAP Grid row: {detail}")
 
 
 @mcp.tool()
@@ -498,17 +498,17 @@ def sap_read_grid_rows(
     only the needed names (for example ``PERNR`` and ``ENAME``) on later calls.
     """
     if not 1 <= max_rows <= 500:
-        raise ValueError("max_rows должен быть от 1 до 500.")
+        raise ValueError("max_rows must be between 1 and 500.")
     with _sap_call():
         session = _session(session_id)
         grid = _control(session, grid_id)
         available_columns = _grid_columns(grid)
         selected_columns = columns or available_columns
         if not selected_columns:
-            raise RuntimeError("В SAP Grid не найдены колонки.")
+            raise RuntimeError("No columns found in the SAP Grid.")
         unknown = sorted(set(selected_columns) - set(available_columns))
         if unknown:
-            raise ValueError(f"В SAP Grid нет колонок: {', '.join(unknown)}.")
+            raise ValueError(f"Columns not found in the SAP Grid: {', '.join(unknown)}.")
         row_count = min(int(_value(grid, "RowCount", 0)), max_rows)
         rows = [
             {
@@ -536,7 +536,7 @@ def sap_select_grid_row(
     """Select a visible SAP GUI grid row without saving data."""
     _require_actions_enabled()
     if row < 0:
-        raise ValueError("row не может быть отрицательным.")
+        raise ValueError("row must not be negative.")
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         grid = _control(session, grid_id)
@@ -555,9 +555,9 @@ def sap_read_grid_infotype_fields(
     """Activate each visible grid row and read known infotype field ids."""
     _require_actions_enabled()
     if not 1 <= max_rows <= 100:
-        raise ValueError("max_rows должен быть от 1 до 100.")
+        raise ValueError("max_rows must be between 1 and 100.")
     if not 1 <= len(field_ids) <= 20:
-        raise ValueError("field_ids должен содержать от 1 до 20 полей.")
+        raise ValueError("field_ids must contain 1 to 20 fields.")
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         grid = _control(session, grid_id)
@@ -565,7 +565,7 @@ def sap_read_grid_infotype_fields(
         selected_columns = columns or available_columns
         unknown = sorted(set(selected_columns) - set(available_columns))
         if unknown:
-            raise ValueError(f"В SAP Grid нет колонок: {', '.join(unknown)}.")
+            raise ValueError(f"Columns not found in the SAP Grid: {', '.join(unknown)}.")
         row_count = min(int(_value(grid, "RowCount", 0)), max_rows)
         total_start = time.perf_counter()
         results = []
@@ -603,7 +603,7 @@ def sap_open_transaction(code: str, session_id: str | None = None) -> dict[str, 
     _require_actions_enabled()
     normalized = code.strip().upper()
     if not re.fullmatch(r"/?[A-Z0-9_]{2,30}(?:/[A-Z0-9_]{1,30})*", normalized):
-        raise ValueError("Некорректный код транзакции.")
+        raise ValueError("Invalid transaction code.")
 
     with _sap_call():
         session = _session(session_id, require_explicit=True)
@@ -645,7 +645,7 @@ def sap_inspect_infotype(
     """
     _require_actions_enabled()
     if not 1 <= max_fields <= 200:
-        raise ValueError("max_fields должен быть от 1 до 200.")
+        raise ValueError("max_fields must be between 1 and 200.")
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         result = _open_infotype(session, infotype, mode)
@@ -667,10 +667,10 @@ def sap_read_personnel_names(
     """
     _require_actions_enabled()
     if not 1 <= len(personnel_numbers) <= 100:
-        raise ValueError("personnel_numbers должен содержать от 1 до 100 номеров.")
+        raise ValueError("personnel_numbers must contain 1 to 100 numbers.")
     normalized = [number.strip() for number in personnel_numbers]
     if any(not re.fullmatch(r"\d{1,16}", number) for number in normalized):
-        raise ValueError("Каждый табельный номер должен состоять из 1–16 цифр.")
+        raise ValueError("Each personnel number must contain 1 to 16 digits.")
 
     with _sap_call():
         session = _session(session_id, require_explicit=True)
@@ -726,9 +726,9 @@ def sap_set_text(control_id: str, value: str, session_id: str | None = None) -> 
         session = _session(session_id, require_explicit=True)
         control = _control(session, control_id)
         if not _value(control, "Changeable", False):
-            raise ValueError("Поле недоступно для ввода.")
+            raise ValueError("Field is not editable.")
         if _value(control, "Type", "") not in {"GuiCTextField", "GuiTextField", "GuiComboBox", "GuiOkCodeField"}:
-            raise ValueError("Контрол не является текстовым полем.")
+            raise ValueError("Control is not a text field.")
         control.text = value
         return {"control_id": control_id, "value_set": True}
 
@@ -741,7 +741,7 @@ def sap_press(control_id: str, session_id: str | None = None) -> dict[str, Any]:
         session = _session(session_id, require_explicit=True)
         control = _control(session, control_id)
         if _value(control, "Type", "") not in {"GuiButton", "GuiMenu", "GuiTab"}:
-            raise ValueError("Контрол не является поддерживаемой кнопкой, меню или вкладкой.")
+            raise ValueError("Control is not a supported button, menu, or tab.")
         control.press()
         _wait_until_ready(session)
         return _screen_summary(session)
@@ -753,7 +753,7 @@ def sap_send_vkey(key: int, session_id: str | None = None) -> dict[str, Any]:
     _require_actions_enabled()
     allowed = {0, 3, 8, 12}
     if key not in allowed:
-        raise ValueError(f"Разрешены только клавиши: {sorted(allowed)}.")
+        raise ValueError(f"Only these keys are allowed: {sorted(allowed)}.")
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         session.findById("wnd[0]").sendVKey(key)

@@ -79,7 +79,7 @@ class FakeGrid:
     RowCount = 2
 
     def GetCellValue(self, row: int, column: str) -> str:
-        return (("91000001", "Тест 1"), ("91000002", "Тест 2"))[row][self.ColumnOrder.index(column)]
+        return (("91000001", "Test 1"), ("91000002", "Test 2"))[row][self.ColumnOrder.index(column)]
 
 
 class FakePa30Session:
@@ -180,7 +180,7 @@ class ServerTests(unittest.TestCase):
     def test_read_fields_reads_only_requested_controls(self) -> None:
         field = FakeControl("P0002-NACHN")
         field.Id = "wnd[0]/usr/txtP0002-NACHN"
-        field.Text = "Тест"
+        field.Text = "Test"
         session = FakePa30Session()
         original_find_by_id = session.findById
         session.findById = lambda control_id: field if control_id == field.Id else original_find_by_id(control_id)
@@ -188,7 +188,7 @@ class ServerTests(unittest.TestCase):
             result = server.sap_read_fields([field.Id], session.Id)
 
         self.assertEqual(result[0]["name"], "P0002-NACHN")
-        self.assertEqual(result[0]["text"], "Тест")
+        self.assertEqual(result[0]["text"], "Test")
 
     def test_read_grid_rows_reads_requested_columns(self) -> None:
         session = FakePa30Session()
