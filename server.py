@@ -25,18 +25,28 @@ mcp = FastMCP("VERTEX SAP GUI")
 CONNECT_TIMEOUT_SECONDS = float(os.getenv("VERTEX_SAP_CONNECT_TIMEOUT", "25"))
 CONNECT_RETRY_SECONDS = 0.5
 ACTIONS_ENABLED = os.getenv("VERTEX_SAP_ENABLE_ACTIONS", "0") == "1"
+SESSION_READY_TIMEOUT_SECONDS = float(os.getenv("VERTEX_SAP_READY_TIMEOUT", "20"))
+LAYOUT_CACHE_SECONDS = float(os.getenv("VERTEX_SAP_LAYOUT_CACHE_SECONDS", "300"))
 _sap_lock = threading.RLock()
+_com_state = threading.local()
+# Cache only a screen's static field schema (names, labels and editability),
+# never values, status messages, or employee data.
+_layout_cache: dict[tuple[str, ...], tuple[float, list[dict[str, Any]]]] = {}
 
 
 @contextmanager
 def _sap_call():
-    """Serialize SAP access and initialise COM in the current MCP worker."""
-    pythoncom.CoInitialize()
-    try:
-        with _sap_lock:
-            yield
-    finally:
-        pythoncom.CoUninitialize()
+    """Serialize SAP access using a persistent COM apartment per MCP worker.
+
+    SAP GUI Scripting is attached once and then reused while the MCP process
+    lives.  Reinitialising and uninitialising COM for every tool call can make
+    SAP treat each call as a new script attachment and show a warning dialog.
+    """
+    if not getattr(_com_state, "initialized", False):
+        pythoncom.CoInitialize()
+        _com_state.initialized = True
+    with _sap_lock:
+        yield
 
 
 def _value(component: Any, name: str, default: Any = "") -> Any:
@@ -58,12 +68,23 @@ def _walk(component: Any):
 
 
 def _application() -> Any:
+    cached = getattr(_com_state, "application", None)
+    if cached is not None:
+        try:
+            # Touch the object so a closed SAP GUI does not leave a stale proxy.
+            _ = cached.Children.Count
+            return cached
+        except Exception:
+            _com_state.application = None
+
     deadline = time.monotonic() + CONNECT_TIMEOUT_SECONDS
     last_error: Exception | None = None
     while True:
         try:
             sap_gui = win32com.client.GetObject("SAPGUI")
-            return sap_gui.GetScriptingEngine
+            application = sap_gui.GetScriptingEngine
+            _com_state.application = application
+            return application
         except Exception as error:
             last_error = error
             if time.monotonic() >= deadline:
@@ -138,6 +159,14 @@ def _editable_text_control_by_name(session: Any, name: str) -> Any:
     raise RuntimeError(f"Поле {name} не найдено или недоступно для ввода.")
 
 
+def _visible_control_by_name(session: Any, name: str) -> Any:
+    """Return the first visible control with an exact SAP technical name."""
+    for component in _walk(session):
+        if _value(component, "Name", "") == name and _value(component, "Visible", True):
+            return component
+    raise RuntimeError(f"Видимый контрол {name} не найден.")
+
+
 def _select_pa30_infotype_title(session: Any, title: str) -> bool:
     """Select a visible PA30 infotype-menu row by its displayed title.
 
@@ -160,6 +189,91 @@ def _select_pa30_infotype_title(session: Any, title: str) -> bool:
         table.getAbsoluteRow(absolute_row).Selected = True
         return True
     return False
+
+
+def _wait_until_ready(session: Any) -> None:
+    """Wait only while SAP is processing a server round trip."""
+    deadline = time.monotonic() + SESSION_READY_TIMEOUT_SECONDS
+    while _value(session, "Busy", False):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("SAP не завершил обработку за отведённое время.")
+        time.sleep(0.05)
+
+
+def _open_infotype(session: Any, infotype: str, mode: str) -> dict[str, Any]:
+    """Open a PA30 infotype in an already selected session without saving it."""
+    selection = infotype.strip()
+    if not selection or len(selection) > 80:
+        raise ValueError("infotype должен содержать от 1 до 80 символов.")
+    function_codes = {"display": "=DIS", "change": "=MOD", "create": "=INS"}
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in function_codes:
+        raise ValueError("mode должен быть display, change или create.")
+    if _value(_value(session, "Info", None), "Transaction", "").upper() != "PA30":
+        raise ValueError("sap_open_infotype доступен только в транзакции PA30.")
+    if re.fullmatch(r"\d{4}", selection):
+        _editable_text_control_by_name(session, "RP50G-CHOIC").text = selection
+    elif not _select_pa30_infotype_title(session, selection):
+        raise ValueError(
+            "Инфотип с таким названием не найден среди видимых строк PA30. "
+            "Откройте нужную вкладку или укажите четырёхзначный номер."
+        )
+    command_field = session.findById("wnd[0]/tbar[0]/okcd")
+    command_field.text = function_codes[normalized_mode]
+    session.findById("wnd[0]").sendVKey(0)
+    _wait_until_ready(session)
+    return {"infotype": selection, "mode": normalized_mode, "saved": False, **_screen_summary(session)}
+
+
+def _visible_fields(session: Any, max_fields: int = 100) -> list[dict[str, Any]]:
+    """Return fields and their labels in one focused pass over the current dynpro."""
+    labels: dict[str, str] = {}
+    fields: list[dict[str, Any]] = []
+    field_types = {"GuiCTextField", "GuiTextField", "GuiComboBox", "GuiCheckBox", "GuiRadioButton"}
+    for component in _walk(session):
+        if not _value(component, "Visible", True):
+            continue
+        name = _value(component, "Name", "")
+        component_type = _value(component, "Type", "")
+        if component_type == "GuiLabel" and name:
+            labels[name] = _value(component, "Text", "").strip()
+        elif component_type in field_types and name and len(fields) < max_fields:
+            fields.append({
+                "name": name,
+                "type": component_type,
+                "label": "",
+                "changeable": bool(_value(component, "Changeable", False)),
+            })
+    for field in fields:
+        field["label"] = labels.get(field["name"], "")
+    return fields
+
+
+def _layout_cache_key(session: Any) -> tuple[str, ...]:
+    info = _value(session, "Info", None)
+    main_window = session.findById("wnd[0]")
+    return (
+        _value(info, "SystemName", ""),
+        _value(info, "Client", ""),
+        _value(info, "Transaction", ""),
+        _value(info, "Program", ""),
+        str(_value(info, "ScreenNumber", "")),
+        _value(main_window, "Text", ""),
+    )
+
+
+def _cached_visible_fields(session: Any, max_fields: int) -> tuple[list[dict[str, Any]], bool]:
+    """Read a dynpro schema once and reuse it while the screen remains known."""
+    if LAYOUT_CACHE_SECONDS <= 0:
+        return _visible_fields(session, max_fields), False
+    key = _layout_cache_key(session)
+    cached = _layout_cache.get(key)
+    now = time.monotonic()
+    if cached and now - cached[0] < LAYOUT_CACHE_SECONDS:
+        return [dict(field) for field in cached[1][:max_fields]], True
+    fields = _visible_fields(session, 200)
+    _layout_cache[key] = (now, [dict(field) for field in fields])
+    return fields[:max_fields], False
 
 
 def _require_actions_enabled() -> None:
@@ -217,6 +331,15 @@ def sap_status(session_id: str | None = None) -> dict[str, Any]:
             "user": _value(_value(session, "Info", None), "User", ""),
             **_screen_summary(session),
         }
+
+
+@mcp.tool()
+def sap_clear_layout_cache() -> dict[str, int]:
+    """Clear cached static screen schemas; no SAP data is changed."""
+    with _sap_call():
+        count = len(_layout_cache)
+        _layout_cache.clear()
+        return {"cleared_entries": count}
 
 
 @mcp.tool()
@@ -278,6 +401,28 @@ def sap_find_controls(query: str, session_id: str | None = None, max_results: in
 
 
 @mcp.tool()
+def sap_read_fields(control_ids: list[str], session_id: str | None = None) -> list[dict[str, Any]]:
+    """Read explicitly identified SAP fields without traversing the screen tree."""
+    if not 1 <= len(control_ids) <= 50:
+        raise ValueError("control_ids должен содержать от 1 до 50 идентификаторов.")
+    with _sap_call():
+        session = _session(session_id)
+        fields: list[dict[str, Any]] = []
+        for control_id in control_ids:
+            control = _control(session, control_id)
+            fields.append(
+                {
+                    "id": control_id,
+                    "name": _value(control, "Name", ""),
+                    "type": _value(control, "Type", ""),
+                    "text": _value(control, "Text", ""),
+                    "changeable": bool(_value(control, "Changeable", False)),
+                }
+            )
+        return fields
+
+
+@mcp.tool()
 def sap_open_transaction(code: str, session_id: str | None = None) -> dict[str, Any]:
     """Open a SAP transaction when actions are explicitly enabled."""
     _require_actions_enabled()
@@ -288,7 +433,7 @@ def sap_open_transaction(code: str, session_id: str | None = None) -> dict[str, 
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         session.StartTransaction(normalized)
-        time.sleep(0.3)
+        _wait_until_ready(session)
         return _screen_summary(session)
 
 
@@ -306,34 +451,95 @@ def sap_open_infotype(
     ``display``, ``change``, or ``create``; opening an infotype never saves it.
     """
     _require_actions_enabled()
-    selection = infotype.strip()
-    if not selection or len(selection) > 80:
-        raise ValueError("infotype должен содержать от 1 до 80 символов.")
-    function_codes = {"display": "=DIS", "change": "=MOD", "create": "=INS"}
-    normalized_mode = mode.strip().lower()
-    if normalized_mode not in function_codes:
-        raise ValueError("mode должен быть display, change или create.")
+    with _sap_call():
+        session = _session(session_id, require_explicit=True)
+        return _open_infotype(session, infotype, mode)
+
+
+@mcp.tool()
+def sap_inspect_infotype(
+    infotype: str,
+    mode: str = "display",
+    session_id: str | None = None,
+    max_fields: int = 100,
+) -> dict[str, Any]:
+    """Open a PA30 infotype and return its visible field names in one MCP call.
+
+    The screen is opened but never saved. Use ``mode=create`` to inspect a
+    form when no existing record is available to display or change.
+    """
+    _require_actions_enabled()
+    if not 1 <= max_fields <= 200:
+        raise ValueError("max_fields должен быть от 1 до 200.")
+    with _sap_call():
+        session = _session(session_id, require_explicit=True)
+        result = _open_infotype(session, infotype, mode)
+        fields, cache_hit = _cached_visible_fields(session, max_fields)
+        return {**result, "fields": fields, "layout_cache_hit": cache_hit}
+
+
+@mcp.tool()
+def sap_read_personnel_names(
+    personnel_numbers: list[str],
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Read IT0002 names in one optimized PA20 batch.
+
+    PA20 and IT0002 are opened once.  Each next employee is reached by Back,
+    changing the personnel number, and Display.  The three name controls are
+    read directly, without reselecting the infotype or traversing the screen.
+    No fields are saved or changed.
+    """
+    _require_actions_enabled()
+    if not 1 <= len(personnel_numbers) <= 100:
+        raise ValueError("personnel_numbers должен содержать от 1 до 100 номеров.")
+    normalized = [number.strip() for number in personnel_numbers]
+    if any(not re.fullmatch(r"\d{1,16}", number) for number in normalized):
+        raise ValueError("Каждый табельный номер должен состоять из 1–16 цифр.")
 
     with _sap_call():
         session = _session(session_id, require_explicit=True)
-        if _value(_value(session, "Info", None), "Transaction", "").upper() != "PA30":
-            raise ValueError("sap_open_infotype доступен только в транзакции PA30.")
-        if re.fullmatch(r"\d{4}", selection):
-            _editable_text_control_by_name(session, "RP50G-CHOIC").text = selection
-        elif not _select_pa30_infotype_title(session, selection):
-            raise ValueError(
-                "Инфотип с таким названием не найден среди видимых строк PA30. "
-                "Откройте нужную вкладку или укажите четырёхзначный номер."
-            )
-        command_field = session.findById("wnd[0]/tbar[0]/okcd")
-        command_field.text = function_codes[normalized_mode]
-        session.findById("wnd[0]").sendVKey(0)
-        time.sleep(0.3)
+        session.StartTransaction("PA20")
+        _wait_until_ready(session)
+        infotype_field = session.findById(
+            "wnd[0]/usr/tabsMENU_TABSTRIP/tabpTAB01/ssubSUBSCR_MENU:SAPMP50A:0400/"
+            "subSUBSCR_ITKEYS:SAPMP50A:0350/ctxtRP50G-CHOIC"
+        )
+        infotype_field.text = "0002"
+        started_at = time.perf_counter()
+        result: list[dict[str, Any]] = []
+        for index, personnel_number in enumerate(normalized):
+            item_started_at = time.perf_counter()
+            try:
+                if index:
+                    session.findById("wnd[0]").sendVKey(3)
+                    _wait_until_ready(session)
+                personnel_field = session.findById("wnd[0]/usr/ctxtRP50G-PERNR")
+                display_button = session.findById("wnd[0]/tbar[1]/btn[7]")
+                personnel_field.text = personnel_number
+                display_button.press()
+                _wait_until_ready(session)
+                name_parts = [
+                    _value(session.findById("wnd[0]/usr/txtP0002-NACHN"), "Text", "").strip(),
+                    _value(session.findById("wnd[0]/usr/txtP0002-VORNA"), "Text", "").strip(),
+                    _value(session.findById("wnd[0]/usr/txtP0002-MIDNM"), "Text", "").strip(),
+                ]
+                result.append({
+                    "personnel_number": personnel_number,
+                    "full_name": " ".join(part for part in name_parts if part),
+                    "duration_ms": round((time.perf_counter() - item_started_at) * 1000),
+                })
+            except Exception as error:
+                result.append({
+                    "personnel_number": personnel_number,
+                    "error": str(error),
+                    "duration_ms": round((time.perf_counter() - item_started_at) * 1000),
+                })
         return {
-            "infotype": selection,
-            "mode": normalized_mode,
-            "saved": False,
-            **_screen_summary(session),
+            "transaction": "PA20",
+            "infotype": "0002",
+            "total_ms": round((time.perf_counter() - started_at) * 1000),
+            "results": result,
         }
 
 
@@ -362,7 +568,7 @@ def sap_press(control_id: str, session_id: str | None = None) -> dict[str, Any]:
         if _value(control, "Type", "") not in {"GuiButton", "GuiMenu", "GuiTab"}:
             raise ValueError("Контрол не является поддерживаемой кнопкой, меню или вкладкой.")
         control.press()
-        time.sleep(0.3)
+        _wait_until_ready(session)
         return _screen_summary(session)
 
 
@@ -376,7 +582,7 @@ def sap_send_vkey(key: int, session_id: str | None = None) -> dict[str, Any]:
     with _sap_call():
         session = _session(session_id, require_explicit=True)
         session.findById("wnd[0]").sendVKey(key)
-        time.sleep(0.3)
+        _wait_until_ready(session)
         return _screen_summary(session)
 
 
